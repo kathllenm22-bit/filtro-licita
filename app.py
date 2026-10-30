@@ -3,7 +3,6 @@ import requests
 import pandas as pd
 from datetime import datetime, date
 import unicodedata
-import re
 
 # Configuração da página
 st.set_page_config(
@@ -49,12 +48,12 @@ with col_logo2:
         st.info("Envie o ficheiro 'logo.png' para a raiz do repositório no GitHub para exibir o logótipo centralizado.")
 
 st.markdown("<h1 style='text-align: center; font-size: 28px; margin-bottom: 0px;'>Monitor de Licitações & Geotecnologias</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #6b7280; margin-bottom: 30px;'>Varredura em tempo real: PNCP, BLL, Compras.gov, Licitações-e e Diários Oficiais</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #6b7280; margin-bottom: 30px;'>Varredura em tempo real baseada estritamente na Data de Publicação</p>", unsafe_allow_html=True)
 
 # --- BARRA LATERAL ---
 st.sidebar.header("Painel de Controle")
 
-# Filtro Opcional de Ano
+# Filtro opcional de Ano baseado estritamente na Data de Publicação
 ano_opcao = st.sidebar.selectbox(
     "Filtrar por Ano de Publicação",
     ["2026 (Ano Atual)", "2025", "Todos os Anos"],
@@ -94,12 +93,12 @@ def buscar_termo_pncp(termo):
     except Exception:
         return []
 
-# Coleta de dados via pesquisa textual cruzada
+# Coleta de dados com foco rigoroso na Data de Publicação
 resultados = []
 urls_vistas = set()
 hoje_str = date.today().strftime("%Y-%m-%d")
 
-with st.spinner("Varrendo portais em busca de licitações..."):
+with st.spinner("Varrendo portais e filtrando por Data de Publicação oficial..."):
     for t_base in TERMOS_OFICIAIS:
         variacoes = set([t_base, normalizar(t_base)])
         for termo_busca in variacoes:
@@ -126,8 +125,25 @@ with st.spinner("Varrendo portais em busca de licitações..."):
                     portal_origem = "Diário Oficial"
 
                 valor = item.get("valor_total_estimado") or item.get("valorTotalEstimado") or 0.0
-                data_pub = item.get("data_publicacao") or item.get("dataPublicacaoPncp") or item.get("data_inclusao") or ""
                 
+                # CAPTURA OFICIAL DA DATA DE PUBLICAÇÃO
+                data_pub = item.get("data_publicacao") or item.get("dataPublicacaoPncp") or item.get("data_inclusao") or ""
+
+                # Se não houver data de publicação clara, descartamos para evitar itens antigos lixo (2022, 2023)
+                if not data_pub:
+                    continue
+
+                # Extração rigorosa do ano com base na Data de Publicação
+                ano_detectado = ""
+                data_formatada = ""
+                try:
+                    dt = datetime.fromisoformat(str(data_pub).replace("Z", ""))
+                    ano_detectado = str(dt.year)
+                    data_formatada = dt.strftime("%d/%m/%Y %H:%M")
+                except Exception:
+                    ano_detectado = str(data_pub)[:4]
+                    data_formatada = str(data_pub)
+
                 # Identificação de Status
                 situacao_api = str(item.get("situacao_encontrada") or item.get("status") or "").lower()
                 titulo_lower = titulo.lower()
@@ -140,31 +156,10 @@ with st.spinner("Varrendo portais em busca de licitações..."):
                     fase_atual = "Encerrada"
                 else:
                     fase_atual = "Abertas / Recebendo Proposta"
-
-                # Identificação do ano de publicação
-                ano_detectado = ""
-                data_formatada = ""
                 
-                if data_pub:
-                    try:
-                        dt = datetime.fromisoformat(str(data_pub).replace("Z", ""))
-                        ano_detectado = str(dt.year)
-                        data_formatada = dt.strftime("%d/%m/%Y %H:%M")
-                    except Exception:
-                        if len(str(data_pub)) >= 4:
-                            ano_detectado = str(data_pub)[:4]
-
-                if not ano_detectado:
-                    if "/2025" in titulo or "/2025" in link:
-                        ano_detectado = "2025"
-                        data_formatada = "Publicado em 2025"
-                    else:
-                        ano_detectado = "2026"
-                        data_formatada = "Publicado em 2026"
-                
-                # Verifica se é de hoje
+                # Verifica se foi publicado hoje
                 is_hoje = False
-                if data_pub and data_pub.startswith(hoje_str):
+                if str(data_pub).startswith(hoje_str):
                     is_hoje = True
 
                 if link not in urls_vistas:
@@ -174,7 +169,7 @@ with st.spinner("Varrendo portais em busca de licitações..."):
                         "Orgao": orgao,
                         "Objeto": titulo,
                         "Valor": valor,
-                        "DataOriginal": data_pub if data_pub else "2026-01-01",
+                        "DataOriginal": data_pub,
                         "DataExibicao": data_formatada,
                         "Ano": ano_detectado,
                         "Portal": portal_origem,
@@ -185,7 +180,7 @@ with st.spinner("Varrendo portais em busca de licitações..."):
 
 df = pd.DataFrame(resultados)
 
-# Aplicação do Filtro Opcional de Ano
+# Aplicação do Filtro Opcional de Ano baseado estritamente na Data de Publicação
 if not df.empty:
     if ano_opcao == "2026 (Ano Atual)":
         df = df[df['Ano'] == "2026"]
@@ -199,7 +194,7 @@ if not df.empty:
     elif status_opcao == "Em Julgamento / Encerradas / Canceladas-Revogadas":
         df = df[df['Fase'].isin(["Em Julgamento", "Encerrada", "Cancelada / Revogada"])]
 
-# Ordenação Cronológica Estrita (Mais recente no topo)
+# Ordenação Cronológica Estrita baseada na Data de Publicação (Mais recente no topo)
 if not df.empty:
     df = df.sort_values(by="DataOriginal", ascending=False, na_position='last').reset_index(drop=True)
 
@@ -218,14 +213,14 @@ if not df.empty:
     # Seção de destaque para publicações de hoje
     df_hoje = df[df['PublicadoHoje'] == True]
     if not df_hoje.empty:
-        st.subheader("🔥 Publicados Hoje no Diário / Portais")
+        st.subheader("🔥 Publicados Hoje (Data de Divulgação)")
         for idx, row in df_hoje.iterrows():
             valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta / Não Informado"
             st.markdown(f"""
                 <div class="destaque-hoje">
                     <b>[{row['Termo']}] {row['Orgao']}</b><br>
                     📦 {row['Objeto']}<br>
-                    📅 <b>{row['DataExibicao']}</b> | 💰 {valor_str} | 🌐 {row['Portal']} | 📌 <i>{row['Fase']}</i><br>
+                    📅 <b>Data de Publicação: {row['DataExibicao']}</b> | 💰 {valor_str} | 🌐 {row['Portal']} | 📌 <i>{row['Fase']}</i><br>
                     🔗 <a href="{row['Link']}" target="_blank">Acessar Edital Oficial</a>
                 </div>
             """, unsafe_allow_html=True)
@@ -242,13 +237,13 @@ if not df.empty:
     
     for idx, row in df.iterrows():
         valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta / Não Informado"
-        badge_hoje = " 🔥 [NOVO DE HOJE]" if row['PublicadoHoje'] else ""
+        badge_hoje = " 🔥 [PUBLICADO HOJE]" if row['PublicadoHoje'] else ""
         
-        with st.expander(f"[{row['Termo']}] {row['Orgao']} — {row['DataExibicao']} — {row['Fase']}{badge_hoje} — {valor_str}"):
+        with st.expander(f"[{row['Termo']}] {row['Orgao']} — Pub: {row['DataExibicao']} — {row['Fase']}{badge_hoje} — {valor_str}"):
             st.markdown(f"**Órgão:** {row['Orgao']}")
             st.markdown(f"**Objeto:** {row['Objeto']}")
-            st.markdown(f"**Data de Publicação:** {row['DataExibicao']}")
-            st.markdown(f"**Ano:** {row['Ano']}")
+            st.markdown(f"**📅 Data de Publicação Oficial:** {row['DataExibicao']}")
+            st.markdown(f"**Ano (Publicação):** {row['Ano']}")
             st.markdown(f"**Fase Atual:** {row['Fase']}")
             st.markdown(f"**Portal de Origem:** {row['Portal']}")
             st.markdown(f"**[Acessar Edital Oficial]({row['Link']})**", unsafe_allow_html=True)
@@ -261,4 +256,4 @@ if not df.empty:
         mime="text/csv"
     )
 else:
-    st.warning("Nenhum edital encontrado para os filtros selecionados no momento.")
+    st.warning("Nenhum edital encontrado com os filtros selecionados no momento.")
