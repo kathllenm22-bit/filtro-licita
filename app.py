@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 import unicodedata
 import re
 
@@ -18,6 +18,7 @@ st.markdown("""
     .main { background-color: #f4f6f9; }
     .stExpander { border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 8px; background-color: white; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
     h1 { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 700; color: #1f2937; }
+    .destaque-hoje { background-color: #e0f2fe; padding: 10px; border-radius: 6px; border-left: 5px solid #0284c7; margin-bottom: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -52,11 +53,18 @@ st.markdown("<p style='text-align: center; color: #6b7280; margin-bottom: 30px;'
 
 # --- BARRA LATERAL ---
 st.sidebar.header("Painel de Controle")
-ano_vigente = "2026"
 
-status_edital = st.sidebar.selectbox(
-    "Status dos Editais",
-    ["todos", "recebendo_proposta", "aberta"],
+# Filtro Opcional de Ano
+ano_opcao = st.sidebar.selectbox(
+    "Filtrar por Ano de Publicação",
+    ["2026 (Ano Atual)", "2025", "Todos os Anos"],
+    index=0
+)
+
+# Seleção de Categoria / Status
+status_opcao = st.sidebar.selectbox(
+    "Filtro de Fase / Status",
+    ["Abertas / Recebendo Proposta", "Em Julgamento / Encerradas / Canceladas-Revogadas", "Todos os Status"],
     index=0
 )
 
@@ -69,7 +77,7 @@ if st.sidebar.button("Atualizar Dados Agora"):
 
 # Função de busca textual direta na API de pesquisa do PNCP
 @st.cache_data(ttl=300)
-def buscar_termo_pncp(termo, status):
+def buscar_termo_pncp(termo):
     url = "https://pncp.gov.br/api/search/"
     params = {
         "q": termo,
@@ -77,8 +85,6 @@ def buscar_termo_pncp(termo, status):
         "pagina": 1,
         "tam_pagina": 40
     }
-    if status != "todos":
-        params["status"] = status
 
     try:
         response = requests.get(url, params=params, timeout=10)
@@ -88,15 +94,16 @@ def buscar_termo_pncp(termo, status):
     except Exception:
         return []
 
-# Coleta de dados via pesquisa textual cruzada para 2026
+# Coleta de dados via pesquisa textual cruzada
 resultados = []
 urls_vistas = set()
+hoje_str = date.today().strftime("%Y-%m-%d")
 
-with st.spinner("Varrendo portais em busca de licitações exclusivas de 2026..."):
+with st.spinner("Varrendo portais em busca de licitações..."):
     for t_base in TERMOS_OFICIAIS:
         variacoes = set([t_base, normalizar(t_base)])
         for termo_busca in variacoes:
-            itens = buscar_termo_pncp(termo_busca, status_edital)
+            itens = buscar_termo_pncp(termo_busca)
             for item in itens:
                 titulo = item.get("title") or item.get("description") or "Objeto não detalhado"
                 orgao = item.get("orgao_razao_social") or item.get("orgao_nome") or "Órgão Não Informado"
@@ -120,8 +127,21 @@ with st.spinner("Varrendo portais em busca de licitações exclusivas de 2026...
 
                 valor = item.get("valor_total_estimado") or item.get("valorTotalEstimado") or 0.0
                 data_pub = item.get("data_publicacao") or item.get("dataPublicacaoPncp") or item.get("data_inclusao") or ""
+                
+                # Identificação de Status
+                situacao_api = str(item.get("situacao_encontrada") or item.get("status") or "").lower()
+                titulo_lower = titulo.lower()
+                
+                if "cancelada" in situacao_api or "revogada" in situacao_api or "cancelada" in titulo_lower or "revogada" in titulo_lower:
+                    fase_atual = "Cancelada / Revogada"
+                elif "julgamento" in situacao_api or "analise" in situacao_api or "habilitacao" in situacao_api:
+                    fase_atual = "Em Julgamento"
+                elif "encerrada" in situacao_api or "homologada" in situacao_api or "concluida" in situacao_api:
+                    fase_atual = "Encerrada"
+                else:
+                    fase_atual = "Abertas / Recebendo Proposta"
 
-                # Identificação rigorosa do ano para bloquear 2025/anteriores
+                # Identificação do ano de publicação
                 ano_detectado = ""
                 data_formatada = ""
                 
@@ -134,17 +154,18 @@ with st.spinner("Varrendo portais em busca de licitações exclusivas de 2026...
                         if len(str(data_pub)) >= 4:
                             ano_detectado = str(data_pub)[:4]
 
-                # Se a data não veio no campo de data, verifica se o título/objeto contém anos passados como /2025 ou /2024
                 if not ano_detectado:
-                    if re.search(r'/202[0-5]\b', titulo) or re.search(r'/202[0-5]\b', link):
-                        continue
+                    if "/2025" in titulo or "/2025" in link:
+                        ano_detectado = "2025"
+                        data_formatada = "Publicado em 2025"
                     else:
-                        ano_detectado = ano_vigente
+                        ano_detectado = "2026"
                         data_formatada = "Publicado em 2026"
-
-                # BLOQUEIO RIGOROSO: Elimina qualquer edital que não seja estritamente de 2026
-                if ano_detectado != ano_vigente or "/2025" in titulo:
-                    continue
+                
+                # Verifica se é de hoje
+                is_hoje = False
+                if data_pub and data_pub.startswith(hoje_str):
+                    is_hoje = True
 
                 if link not in urls_vistas:
                     urls_vistas.add(link)
@@ -155,40 +176,80 @@ with st.spinner("Varrendo portais em busca de licitações exclusivas de 2026...
                         "Valor": valor,
                         "DataOriginal": data_pub if data_pub else "2026-01-01",
                         "DataExibicao": data_formatada,
+                        "Ano": ano_detectado,
                         "Portal": portal_origem,
+                        "Fase": fase_atual,
+                        "PublicadoHoje": is_hoje,
                         "Link": link
                     })
 
 df = pd.DataFrame(resultados)
 
+# Aplicação do Filtro Opcional de Ano
+if not df.empty:
+    if ano_opcao == "2026 (Ano Atual)":
+        df = df[df['Ano'] == "2026"]
+    elif ano_opcao == "2025":
+        df = df[df['Ano'] == "2025"]
+
+# Aplicação do Filtro de Status
+if not df.empty:
+    if status_opcao == "Abertas / Recebendo Proposta":
+        df = df[df['Fase'] == "Abertas / Recebendo Proposta"]
+    elif status_opcao == "Em Julgamento / Encerradas / Canceladas-Revogadas":
+        df = df[df['Fase'].isin(["Em Julgamento", "Encerrada", "Cancelada / Revogada"])]
+
 # Ordenação Cronológica Estrita (Mais recente no topo)
 if not df.empty:
     df = df.sort_values(by="DataOriginal", ascending=False, na_position='last').reset_index(drop=True)
 
+total_hoje = len(df[df['PublicadoHoje'] == True]) if not df.empty else 0
+
 # Métricas Visuais
-col_m1, col_m2, col_m3 = st.columns(3)
-col_m1.metric("Licitações 2026 Encontradas", len(df))
-col_m2.metric("Termos Monitorados", len(TERMOS_OFICIAIS))
-col_m3.metric("Ano de Referência", ano_vigente)
+col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+col_m1.metric("Licitações Listadas", len(df))
+col_m2.metric("Publicadas Hoje", total_hoje)
+col_m3.metric("Filtro de Ano", ano_opcao)
+col_m4.metric("Termos Monitorados", len(TERMOS_OFICIAIS))
 
 st.markdown("---")
 
 if not df.empty:
-    st.subheader("Editais e Avisos Vigentes (2026)")
+    # Seção de destaque para publicações de hoje
+    df_hoje = df[df['PublicadoHoje'] == True]
+    if not df_hoje.empty:
+        st.subheader("🔥 Publicados Hoje no Diário / Portais")
+        for idx, row in df_hoje.iterrows():
+            valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta / Não Informado"
+            st.markdown(f"""
+                <div class="destaque-hoje">
+                    <b>[{row['Termo']}] {row['Orgao']}</b><br>
+                    📦 {row['Objeto']}<br>
+                    📅 <b>{row['DataExibicao']}</b> | 💰 {valor_str} | 🌐 {row['Portal']} | 📌 <i>{row['Fase']}</i><br>
+                    🔗 <a href="{row['Link']}" target="_blank">Acessar Edital Oficial</a>
+                </div>
+            """, unsafe_allow_html=True)
+        st.markdown("---")
+
+    st.subheader("📋 Lista Geral de Editais e Avisos")
     
-    # Campo de pesquisa corrigido sem erro de variável
     filtro_texto = st.text_input("Filtrar resultados por palavra-chave, órgão ou portal:", "")
     if filtro_texto:
         df = df[df['Orgao'].str.contains(filtro_texto, case=False, na=False) | 
                 df['Objeto'].str.contains(filtro_texto, case=False, na=False) |
-                df['Portal'].str.contains(filtro_texto, case=False, na=False)]
+                df['Portal'].str.contains(filtro_texto, case=False, na=False) |
+                df['Fase'].str.contains(filtro_texto, case=False, na=False)]
     
     for idx, row in df.iterrows():
         valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta / Não Informado"
-        with st.expander(f"[{row['Termo']}] {row['Orgao']} — {row['DataExibicao']} — {valor_str}"):
+        badge_hoje = " 🔥 [NOVO DE HOJE]" if row['PublicadoHoje'] else ""
+        
+        with st.expander(f"[{row['Termo']}] {row['Orgao']} — {row['DataExibicao']} — {row['Fase']}{badge_hoje} — {valor_str}"):
             st.markdown(f"**Órgão:** {row['Orgao']}")
             st.markdown(f"**Objeto:** {row['Objeto']}")
             st.markdown(f"**Data de Publicação:** {row['DataExibicao']}")
+            st.markdown(f"**Ano:** {row['Ano']}")
+            st.markdown(f"**Fase Atual:** {row['Fase']}")
             st.markdown(f"**Portal de Origem:** {row['Portal']}")
             st.markdown(f"**[Acessar Edital Oficial]({row['Link']})**", unsafe_allow_html=True)
             
@@ -196,8 +257,8 @@ if not df.empty:
     st.download_button(
         label="Baixar Relatório em Planilha (CSV)",
         data=csv,
-        file_name=f"licitacoes_esteio_2026_{datetime.now().strftime('%Y%m%d')}.csv",
+        file_name=f"licitacoes_esteio_{datetime.now().strftime('%Y%m%d')}.csv",
         mime="text/csv"
     )
 else:
-    st.warning("Nenhum edital de 2026 retornado no momento. Clique em 'Atualizar Dados Agora' na barra lateral.")
+    st.warning("Nenhum edital encontrado para os filtros selecionados no momento.")
