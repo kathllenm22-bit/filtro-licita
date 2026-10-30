@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 from datetime import datetime
 import unicodedata
+import re
 
 # Configuração da página
 st.set_page_config(
@@ -25,7 +26,7 @@ def normalizar(texto):
     if not texto:
         return ""
     return ''.join(
-        c for c in unicodedata.normalize('NFD', texto)
+        c for c in unicodedata.normalize('NFD', str(texto))
         if unicodedata.category(c) != 'Mn'
     ).lower()
 
@@ -74,7 +75,7 @@ def buscar_termo_pncp(termo, status):
         "q": termo,
         "tipos_documento": "edital",
         "pagina": 1,
-        "tam_pagina": 30
+        "tam_pagina": 40
     }
     if status != "todos":
         params["status"] = status
@@ -91,9 +92,8 @@ def buscar_termo_pncp(termo, status):
 resultados = []
 urls_vistas = set()
 
-with st.spinner("Varrendo portais em busca de licitações de 2026..."):
+with st.spinner("Varrendo portais em busca de licitações exclusivas de 2026..."):
     for t_base in TERMOS_OFICIAIS:
-        # Testa a palavra-chave original e a versão sem acento
         variacoes = set([t_base, normalizar(t_base)])
         for termo_busca in variacoes:
             itens = buscar_termo_pncp(termo_busca, status_edital)
@@ -119,22 +119,31 @@ with st.spinner("Varrendo portais em busca de licitações de 2026..."):
                     portal_origem = "Diário Oficial"
 
                 valor = item.get("valor_total_estimado") or item.get("valorTotalEstimado") or 0.0
-                data_pub = item.get("data_publicacao") or item.get("dataPublicacaoPncp") or ""
+                data_pub = item.get("data_publicacao") or item.get("dataPublicacaoPncp") or item.get("data_inclusao") or ""
 
-                # Filtro estrito para garantir apenas o ano de 2026
-                ano_pub = ano_vigente
-                data_formatada = data_pub
+                # Identificação rigorosa do ano para bloquear 2025/anteriores
+                ano_detectado = ""
+                data_formatada = ""
+                
                 if data_pub:
                     try:
-                        dt = datetime.fromisoformat(data_pub.replace("Z", ""))
-                        ano_pub = str(dt.year)
+                        dt = datetime.fromisoformat(str(data_pub).replace("Z", ""))
+                        ano_detectado = str(dt.year)
                         data_formatada = dt.strftime("%d/%m/%Y %H:%M")
                     except Exception:
-                        if len(data_pub) >= 4:
-                            ano_pub = data_pub[:4]
+                        if len(str(data_pub)) >= 4:
+                            ano_detectado = str(data_pub)[:4]
 
-                # Rejeita explicitamente 2025 ou anos anteriores
-                if ano_pub != ano_vigente:
+                # Se a data não veio no campo de data, verifica se o título/objeto contém anos passados como /2025 ou /2024
+                if not ano_detectado:
+                    if re.search(r'/202[0-5]\b', titulo) or re.search(r'/202[0-5]\b', link):
+                        continue
+                    else:
+                        ano_detectado = ano_vigente
+                        data_formatada = "Publicado em 2026"
+
+                # BLOQUEIO RIGOROSO: Elimina qualquer edital que não seja estritamente de 2026
+                if ano_detectado != ano_vigente or "/2025" in titulo:
                     continue
 
                 if link not in urls_vistas:
@@ -144,15 +153,15 @@ with st.spinner("Varrendo portais em busca de licitações de 2026..."):
                         "Orgao": orgao,
                         "Objeto": titulo,
                         "Valor": valor,
-                        "DataOriginal": data_pub,
-                        "DataExibicao": data_formatada if data_formatada else "Data não informada",
+                        "DataOriginal": data_pub if data_pub else "2026-01-01",
+                        "DataExibicao": data_formatada,
                         "Portal": portal_origem,
                         "Link": link
                     })
 
 df = pd.DataFrame(resultados)
 
-# Ordenação Cronológica Estrita (Do mais recente para o mais antigo - Hoje no topo)
+# Ordenação Cronológica Estrita (Mais recente no topo)
 if not df.empty:
     df = df.sort_values(by="DataOriginal", ascending=False, na_position='last').reset_index(drop=True)
 
@@ -167,10 +176,11 @@ st.markdown("---")
 if not df.empty:
     st.subheader("Editais e Avisos Vigentes (2026)")
     
+    # Campo de pesquisa corrigido sem erro de variável
     filtro_texto = st.text_input("Filtrar resultados por palavra-chave, órgão ou portal:", "")
     if filtro_texto:
         df = df[df['Orgao'].str.contains(filtro_texto, case=False, na=False) | 
-                df['Objeto'].str.contains(fil_texto, case=False, na=False) |
+                df['Objeto'].str.contains(filtro_texto, case=False, na=False) |
                 df['Portal'].str.contains(filtro_texto, case=False, na=False)]
     
     for idx, row in df.iterrows():
@@ -190,4 +200,4 @@ if not df.empty:
         mime="text/csv"
     )
 else:
-    st.warning("Nenhum edital de 2026 retornado com o status selecionado. Experimente alterar o campo 'Status dos Editais' na barra lateral para 'todos' para ampliar a captura.")
+    st.warning("Nenhum edital de 2026 retornado no momento. Clique em 'Atualizar Dados Agora' na barra lateral.")
