@@ -10,7 +10,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Palavras-chave padrão
+# Palavras-chave oficiais de Geotecnologias e Engenharia Cartográfica
 KEYWORDS_PADRAO = [
     "engenharia cartografica", "geoprocessamento", "aerolevantamento",
     "aerofotogrametria", "georreferenciamento urbano", "planta generica de valores",
@@ -24,61 +24,75 @@ st.markdown("Plataforma automatizada para varredura e filtro de editais no **PNC
 
 # Barra Lateral (Filtros)
 st.sidebar.header("⚙️ Configurações & Filtros")
-dias_busca = st.sidebar.slider("Período de busca (Dias atrás)", min_value=1, max_value=30, value=7)
+dias_busca = st.sidebar.slider("Período de busca (Dias atrás)", min_value=1, max_value=60, value=30)
 
-st.sidebar.subheader("Termos de Busca Selecionados")
+st.sidebar.subheader("Termos Monitorados")
 termos_ativos = []
 for kw in KEYWORDS_PADRAO:
     if st.sidebar.checkbox(kw.title(), value=True):
         termos_ativos.append(kw)
 
-# Função para buscar dados da API do PNCP
-@st.cache_data(ttl=3600)
+# Função para buscar dados da API do PNCP (com mais dias por padrão)
+@st.cache_data(ttl=1800)
 def carregar_licitacoes(dias):
     data_fim = datetime.now()
     data_inicio = data_fim - timedelta(days=dias)
     
     base_url = "https://pncp.gov.br/api/consulta/v1/licitacoes"
-    params = {
-        "dataInicial": data_inicio.strftime("%Y%m%d"),
-        "dataFinal": data_fim.strftime("%Y%m%d"),
-        "pagina": 1,
-        "tamanhoPagina": 100
-    }
     
-    try:
-        response = requests.get(base_url, params=params, timeout=15)
-        if response.status_code == 200:
-            return response.json().get("resultado", [])
-    except Exception:
-        pass
-    return []
+    # Faz requisição paginada para garantir que traz bastantes dados
+    todos_resultados = []
+    for pagina in range(1, 4): # Pega até 3 páginas (aprox. 150 a 300 editais recentes)
+        params = {
+            "dataInicial": data_inicio.strftime("%Y%m%d"),
+            "dataFinal": data_fim.strftime("%Y%m%d"),
+            "pagina": pagina,
+            "tamanhoPagina": 100
+        }
+        try:
+            response = requests.get(base_url, params=params, timeout=15)
+            if response.status_code == 200:
+                dados = response.json().get("resultado", [])
+                if not dados:
+                    break
+                todos_resultados.extend(dados)
+            else:
+                break
+        except Exception:
+            break
+            
+    return todos_resultados
 
 # Carregamento dos dados
-with st.spinner("Consultando dados oficiais no PNCP..."):
+with st.spinner("Consultando dados oficiais no PNCP (aguarde um instante)..."):
     bruto = carregar_licitacoes(dias_busca)
 
-# Processamento e Filtro
+# Processamento e Filtro Flexível (Basta conter UM dos termos ativos)
 resultados = []
 for lic in bruto:
+    # Junta o objeto resumido e a descrição se houver para garantir a leitura
     objeto = (lic.get("objetoResumido") or "").lower()
+    
     for kw in termos_ativos:
+        # Verifica se a palavra-chave está contida no texto do objeto
         if kw in objeto:
             cnpj = lic.get("orgaoEntidade", {}).get("cnpj", "")
             ano = lic.get("ano", "")
             seq = lic.get("sequencial", "")
             link = f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{seq}"
             
-            resultados.append({
-                "Orgao": lic.get("orgaoEntidade", {}).get("razaoSocial", "Órgão não informado"),
-                "Objeto": lic.get("objetoResumido", ""),
-                "DataPublicacao": lic.get("dataPublicacaoPncp", ""),
-                "DataAbertura": lic.get("dataAberturaProposta", "Consulte Edital"),
-                "ValorEstimado": lic.get("valorTotalEstimado") or 0.0,
-                "Modalidade": lic.get("modalidadeNome", "Não informada"),
-                "Link": link,
-                "Termo": kw.upper()
-            })
+            # Evita duplicatas caso o mesmo edital tenha mais de um termo
+            if not any(r['Link'] == link for r in resultados):
+                resultados.append({
+                    "Orgao": lic.get("orgaoEntidade", {}).get("razaoSocial", "Órgão não informado"),
+                    "Objeto": lic.get("objetoResumido", ""),
+                    "DataPublicacao": lic.get("dataPublicacaoPncp", ""),
+                    "DataAbertura": lic.get("dataAberturaProposta", "Consulte Edital"),
+                    "ValorEstimado": lic.get("valorTotalEstimado") or 0.0,
+                    "Modalidade": lic.get("modalidadeNome", "Não informada"),
+                    "Link": link,
+                    "Termo": kw.upper()
+                })
             break
 
 df = pd.DataFrame(resultados)
@@ -86,7 +100,7 @@ df = pd.DataFrame(resultados)
 # Métricas no Topo
 col1, col2, col3 = st.columns(3)
 col1.metric("Licitações Encontradas", len(df))
-col2.metric("Termos Monitorados", len(termos_ativos))
+col2.metric("Termos Ativos", len(termos_ativos))
 col3.metric("Período Analisado", f"Últimos {dias_busca} dias")
 
 st.markdown("---")
@@ -101,9 +115,10 @@ if not df.empty:
         df = df[df['Orgao'].str.contains(filtro_texto, case=False, na=False) | 
                 df['Objeto'].str.contains(filtro_texto, case=False, na=False)]
     
-    # Tabela interativa
+    # Tabela interativa em cards expansíveis
     for index, row in df.iterrows():
-        with st.expander(f"🔹 [{row['Termo']}] {row['Orgao']} — R$ {row['ValorEstimado']:,.2f}" if row['ValorEstimado'] > 0 else f"🔹 [{row['Termo']}] {row['Orgao']} — Valor Sigiloso/Não Informado"):
+        valor_str = f"R$ {row['ValorEstimado']:,.2f}" if row['ValorEstimado'] > 0 else "Valor Sigiloso / Não Informado"
+        with st.expander(f"🔹 [{row['Termo']}] {row['Orgao']} — {valor_str}"):
             st.write(f"**Objeto Completo:** {row['Objeto']}")
             st.markdown(f"**Modalidade:** {row['Modalidade']}")
             st.markdown(f"**Abertura das Propostas:** {row['DataAbertura']}")
@@ -118,4 +133,4 @@ if not df.empty:
         mime="text/csv",
     )
 else:
-    st.info("Nenhuma licitação encontrada no período selecionado com os termos ativos. Tente aumentar o período de busca na barra lateral.")
+    st.info("Nenhuma licitação encontrada no período selecionado. Tente aumentar o período de busca para 30 ou 60 dias na barra lateral esquerda.")
