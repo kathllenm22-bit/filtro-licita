@@ -29,10 +29,17 @@ TERMOS_BASE = [
 ]
 
 st.title("🗺️ Monitor de Licitações Públicas - Geotecnologias & Cartografia")
-st.markdown("Varredura completa no **PNCP, BLL, Compras.gov, Licitações-e e Diários Oficiais** (Ano todo de 2026).")
+st.markdown("Varredura completa no **PNCP, BLL, Compras.gov, Licitações-e e Diários Oficiais** com ordenação cronológica e filtro de ano.")
 
 # Barra Lateral
-st.sidebar.header("⚙️ Configurações & Atualização")
+st.sidebar.header("⚙️ Filtros & Configurações")
+
+# Filtro de Ano para evitar licitações de 2025 ou anos anteriores
+ano_selecionado = st.sidebar.selectbox(
+    "Filtrar por Ano",
+    [2026, 2025, "Todos os Anos"],
+    index=0
+)
 
 hora_atual = datetime.now().hour
 if hora_atual < 8:
@@ -50,19 +57,12 @@ if st.sidebar.button("🔄 Atualizar Dados Agora"):
     st.cache_data.clear()
     st.rerun()
 
-status_filtro = st.sidebar.selectbox(
-    "Status dos Editais",
-    ["todos", "recebendo_proposta", "aberta"],
-    index=0
-)
-
-# Função de busca robusta utilizando a API do PNCP para o ano todo
+# Função de busca robusta utilizando a API do PNCP
 @st.cache_data(ttl=1800)
-def buscar_licitacoes_ano(termo):
+def buscar_licitacoes_api(termo):
     url = "https://pncp.gov.br/api/search/"
     todos_itens = []
     
-    # Varre as primeiras páginas para cobrir o volume do ano
     for pagina in range(1, 6):
         params = {
             "q": termo,
@@ -91,13 +91,12 @@ with st.spinner("Varrendo PNCP, portais integrados (BLL, Compras.gov, Licitaçõ
     for t_base in TERMOS_BASE:
         variacoes = gerar_variacoes(t_base)
         for termo in variacoes:
-            itens = buscar_licitacoes_ano(termo)
+            itens = buscar_licitacoes_api(termo)
             for item in itens:
-                # Extração de campos essenciais
                 titulo = item.get("title") or item.get("description") or "Objeto não detalhado no resumo"
                 orgao = item.get("orgao_razao_social") or item.get("orgao_nome") or "Órgão Não Informado"
                 
-                # Tratamento correto do link oficial do edital no PNCP
+                # Tratamento do link oficial do edital
                 link = item.get("url") or item.get("link") or ""
                 pncp_id = item.get("id") or item.get("numeroControlePNCP")
                 
@@ -116,11 +115,16 @@ with st.spinner("Varrendo PNCP, portais integrados (BLL, Compras.gov, Licitaçõ
                 elif "diario" in link_lower or "imprensa" in link_lower:
                     portal_origem = "Diário Oficial"
 
-                # Valor estimado (quando disponível na API)
                 valor = item.get("valor_total_estimado") or item.get("valorTotalEstimado") or 0.0
-                
-                # Data de publicação
-                data_pub = item.get("data_publicacao") or item.get("dataPublicacaoPncp") or "Não informada"
+                data_pub = item.get("data_publicacao") or item.get("dataPublicacaoPncp") or ""
+
+                # Extrai o ano da data de publicação para o filtro
+                ano_pub = ""
+                if data_pub and len(data_pub) >= 4:
+                    try:
+                        ano_pub = str(datetime.fromisoformat(data_pub.replace("Z", "")).year)
+                    except Exception:
+                        ano_pub = data_pub[:4]
 
                 if link not in urls_vistas:
                     urls_vistas.add(link)
@@ -129,23 +133,32 @@ with st.spinner("Varrendo PNCP, portais integrados (BLL, Compras.gov, Licitaçõ
                         "Orgao": orgao,
                         "Objeto": titulo,
                         "Valor": valor,
-                        "Data": data_pub,
+                        "Data": data_pub if data_pub else "Não informada",
+                        "Ano": ano_pub,
                         "Portal": portal_origem,
                         "Link": link
                     })
 
 df = pd.DataFrame(resultados)
 
+# Aplicação do Filtro de Ano escolhido na barra lateral
+if ano_selecionado != "Todos os Anos" and not df.empty:
+    df = df[df['Ano'] == str(ano_selecionado)]
+
+# Ordenação Cronológica Decrescente (Do mais recente para o mais antigo com base na data)
+if not df.empty:
+    df = df.sort_values(by="Data", ascending=False).reset_index(drop=True)
+
 # Métricas Principais
 col1, col2, col3 = st.columns(3)
-col1.metric("Licitações Encontradas (2026)", len(df))
+col1.metric("Licitações Listadas", len(df))
 col2.metric("Termos Monitorados", len(TERMOS_BASE))
-col3.metric("Portais Varridos", "PNCP, BLL, Compras-e, Diários")
+col3.metric("Filtro de Ano Ativo", str(ano_selecionado))
 
 st.markdown("---")
 
 if not df.empty:
-    st.subheader("📋 Editais e Licitações Localizadas")
+    st.subheader("📋 Editais e Licitações (Mais Recentes Primeiro)")
     
     # Campo de filtro rápido por texto
     filtro_texto = st.text_input("🔍 Filtrar por órgão, objeto ou portal:", "")
@@ -157,7 +170,7 @@ if not df.empty:
     # Exibição em cards detalhados
     for idx, row in df.iterrows():
         valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta / Não Informado"
-        with st.expander(f"🔹 [{row['Termo']}] {row['Orgao']} — 💰 {valor_str}"):
+        with st.expander(f"🔹 [{row['Termo']}] {row['Orgao']} — 📅 {row['Data'][:10]} — 💰 {valor_str}"):
             st.markdown(f"**🏛️ Órgão:** {row['Orgao']}")
             st.markdown(f"**📦 Objeto:** {row['Objeto']}")
             st.markdown(f"**📅 Data de Publicação:** {row['Data']}")
@@ -167,10 +180,10 @@ if not df.empty:
     # Botão de exportação
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="📥 Baixar Planilha Completa de Licitações (CSV)",
+        label="📥 Baixar Planilha Filtrada (CSV)",
         data=csv,
-        file_name=f"licitacoes_geotec_ano_2026_{datetime.now().strftime('%Y%m%d')}.csv",
+        file_name=f"licitacoes_geotec_{datetime.now().strftime('%Y%m%d')}.csv",
         mime="text/csv"
     )
 else:
-    st.warning("Nenhuma licitação encontrada para o período completo com os termos atuais. Utilize o botão '🔄 Atualizar Dados Agora' na barra lateral.")
+    st.warning("Nenhuma licitação encontrada para o ano selecionado. Altere o filtro de ano na barra lateral ou clique em '🔄 Atualizar Dados Agora'.")
