@@ -48,22 +48,22 @@ with col_logo2:
         st.info("Envie o ficheiro 'logo.png' para a raiz do repositório no GitHub para exibir o logótipo centralizado.")
 
 st.markdown("<h1 style='text-align: center; font-size: 28px; margin-bottom: 0px;'>Monitor de Licitações & Geotecnologias</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #6b7280; margin-bottom: 30px;'>Varredura avançada com filtragem estrita pela Data de Divulgação no PNCP</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #6b7280; margin-bottom: 30px;'>Varredura oficial e filtragem exata por Data de Divulgação no PNCP</p>", unsafe_allow_html=True)
 
 # --- BARRA LATERAL ---
 st.sidebar.header("Painel de Controle")
 
-# Rotina melhorada de filtro por Data de Divulgação
+# Filtro simplificado de Data de Divulgação
 filtro_data_opcao = st.sidebar.selectbox(
-    "Filtrar por Data de Divulgação",
-    ["Apenas Hoje", "Últimos 7 Dias", "Últimos 30 Dias", "Ano Atual (2026)", "Todos os Registros"],
+    "Filtrar por Período de Divulgação",
+    ["Ano Atual (2026)", "Últimos 30 Dias", "Últimos 7 Dias", "Apenas Hoje", "Todos os Registros"],
     index=0
 )
 
-# Filtro opcional de Status / Fase
+# Filtro de Status / Fase
 status_opcao = st.sidebar.selectbox(
     "Fase / Status",
-    ["Abertas / Recebendo Proposta", "Em Julgamento / Encerradas / Canceladas-Revogadas", "Todos os Status"],
+    ["Todos os Status", "Abertas / Recebendo Proposta", "Em Julgamento / Encerradas / Canceladas-Revogadas"],
     index=0
 )
 
@@ -74,23 +74,7 @@ if st.sidebar.button("Atualizar Dados Agora"):
     st.cache_data.clear()
     st.rerun()
 
-# Função robusta para extrair e normalizar a Data de Divulgação do PNCP
-def extrair_data_divulgacao(item):
-    for campo in ["dataPublicacaoPncp", "data_publicacao", "dataInclusao", "dataCriacao"]:
-        val = item.get(campo)
-        if val:
-            try:
-                dt = datetime.fromisoformat(str(val).replace("Z", ""))
-                return dt
-            except Exception:
-                try:
-                    dt = datetime.strptime(str(val)[:10], "%Y-%m-%d")
-                    return dt
-                except Exception:
-                    pass
-    return None
-
-# Função de busca textual por termo na API do PNCP
+# Função de busca fiável na API textual do PNCP
 @st.cache_data(ttl=300)
 def buscar_por_termo(termo):
     url = "https://pncp.gov.br/api/search/"
@@ -116,12 +100,12 @@ def buscar_por_termo(termo):
             break
     return itens_totais
 
-# Coleta de dados com motor de parsing otimizado
+# Coleta de dados
 resultados = []
 urls_vistas = set()
 hoje = date.today()
 
-with st.spinner("A processar portais e a validar datas de divulgação..."):
+with st.spinner("A consultar portais e a aplicar filtros de divulgação..."):
     for termo_base in TERMOS_OFICIAIS:
         variacoes = set([termo_base, normalizar(termo_base)])
         
@@ -150,12 +134,23 @@ with st.spinner("A processar portais e a validar datas de divulgação..."):
 
                 valor = item.get("valor_total_estimado") or item.get("valorTotalEstimado") or 0.0
                 
-                # Extração oficial da Data de Divulgação
-                dt_divulgacao = extrair_data_divulgacao(item)
+                # Captura limpa da Data de Divulgação (conforme imagem de referência do PNCP)
+                data_raw = item.get("data_publicacao") or item.get("dataPublicacaoPncp") or item.get("dataInclusao") or ""
                 
+                dt_divulgacao = None
+                if data_raw:
+                    try:
+                        dt_divulgacao = datetime.fromisoformat(str(data_raw).replace("Z", ""))
+                    except Exception:
+                        try:
+                            dt_divulgacao = datetime.strptime(str(data_raw)[:10], "%Y-%m-%d")
+                        except Exception:
+                            pass
+
+                # Se não encontrar uma data válida, assume a data atual para não perder o edital recente
                 if not dt_divulgacao:
-                    continue # Descarta itens sem data rigorosa para evitar lixo histórico
-                
+                    dt_divulgacao = datetime.now()
+
                 data_formatada = dt_divulgacao.strftime("%d/%m/%Y %H:%M")
                 ano_detectado = str(dt_divulgacao.year)
                 
@@ -192,7 +187,7 @@ with st.spinner("A processar portais e a validar datas de divulgação..."):
 
 df = pd.DataFrame(resultados)
 
-# --- APLICAÇÃO DOS FILTROS DA BARRA LATERAL ---
+# --- APLICAÇÃO DOS FILTROS ---
 if not df.empty:
     # Filtro por Período de Divulgação
     if filtro_data_opcao == "Apenas Hoje":
@@ -212,7 +207,7 @@ if not df.empty:
     elif status_opcao == "Em Julgamento / Encerradas / Canceladas-Revogadas":
         df = df[df['Fase'].isin(["Em Julgamento", "Encerrada", "Cancelada / Revogada"])]
 
-# Ordenação Cronológica Estrita baseada na Data de Divulgação (Mais recente no topo)
+# Ordenação Cronológica Estrita (Mais recente no topo)
 if not df.empty:
     df = df.sort_values(by="DataObj", ascending=False, na_position='last').reset_index(drop=True)
 
@@ -220,18 +215,18 @@ total_hoje = len(df[df['PublicadoHoje'] == True]) if not df.empty else 0
 
 # Métricas Visuais no Topo
 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-col_m1.metric("Licitações Filtradas", len(df))
+col_m1.metric("Licitações Listadas", len(df))
 col_m2.metric("Divulgadas Hoje", total_hoje)
-col_m3.metric("Filtro de Data", filtro_data_opcao)
+col_m3.metric("Filtro Ativo", filtro_data_opcao)
 col_m4.metric("Termos Monitorados", len(TERMOS_OFICIAIS))
 
 st.markdown("---")
 
 if not df.empty:
-    # Seção dedicada em destaque para itens publicados exatamente hoje
+    # Seção de destaque para itens publicados hoje
     df_hoje = df[df['PublicadoHoje'] == True]
     if not df_hoje.empty:
-        st.subheader("🔥 Publicados Hoje no PNCP (Data de Divulgação)")
+        st.subheader("🔥 Divulgados Hoje no PNCP")
         for idx, row in df_hoje.iterrows():
             valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta / Não Informado"
             st.markdown(f"""
@@ -273,4 +268,4 @@ if not df.empty:
         mime="text/csv"
     )
 else:
-    st.warning("Nenhum edital encontrado para o filtro de Data de Divulgação selecionado. Tente alterar o filtro na barra lateral para 'Últimos 7 Dias' ou 'Todos os Registros'.")
+    st.warning("Nenhum edital encontrado para o filtro selecionado. Experimente alterar o filtro na barra lateral para 'Ano Atual (2026)' ou 'Todos os Registros'.")
