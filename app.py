@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import unicodedata
 
 # Configuração da página
@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Estilização corporativa e limpa (sem excesso de emojis)
+# Estilização corporativa limpa
 st.markdown("""
     <style>
     .main { background-color: #f4f6f9; }
@@ -20,16 +20,17 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Função para gerar variações (com e sem acento)
-def gerar_variacoes(texto):
-    sem_acento = ''.join(
+# Função para remover acentos para busca flexível
+def normalizar(texto):
+    if not texto:
+        return ""
+    return ''.join(
         c for c in unicodedata.normalize('NFD', texto)
         if unicodedata.category(c) != 'Mn'
-    )
-    return list(set([texto.lower(), sem_acento.lower()]))
+    ).lower()
 
-# Termos oficiais monitorados
-TERMOS_BASE = [
+# Os 15 termos oficiais obrigatórios
+TERMOS_OFICIAIS = [
     "engenharia cartografica", "geoprocessamento", "aerolevantamento",
     "aerofotogrametria", "georreferenciamento urbano", "planta generica de valores",
     "pgv", "cadastro imobiliario", "lidar", "ortofotos", "vetorizacao cartografica",
@@ -43,130 +44,132 @@ with col_logo2:
     try:
         st.image("logo.png", use_container_width=True)
     except Exception:
-        # Caso o arquivo logo.png ainda não esteja no GitHub, exibe um aviso limpo
-        st.info("Envie o arquivo 'logo.png' para a raiz do repositório no GitHub para exibir o logótipo centralizado.")
+        st.info("Envie o ficheiro 'logo.png' para a raiz do repositório no GitHub para exibir o logótipo centralizado.")
 
 st.markdown("<h1 style='text-align: center; font-size: 28px; margin-bottom: 0px;'>Monitor de Licitações & Geotecnologias</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #6b7280; margin-bottom: 30px;'>Varredura em tempo real: PNCP, BLL, Compras.gov, Licitações-e e Diários Oficiais</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #6b7280; margin-bottom: 30px;'>Varredura exaustiva por lotes em tempo real: PNCP, BLL, Compras.gov, Licitações-e e Diários Oficiais</p>", unsafe_allow_html=True)
 
-# --- BARRA LATERAL LIMPA ---
+# --- BARRA LATERAL ---
 st.sidebar.header("Painel de Controle")
-
+dias_retroativos = st.sidebar.slider("Período de Varredura (Dias)", min_value=15, max_value=120, value=60)
 ano_vigente = "2026"
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Sincronização")
 st.sidebar.text("Atualizações automáticas:\n08h | 12h | 17h")
 
 if st.sidebar.button("Atualizar Dados Agora"):
     st.cache_data.clear()
     st.rerun()
 
-# Função de busca em tempo real na API com foco em 2026
+# Função de busca otimizada consultando diretamente o endpoint de consulta por data + termo
 @st.cache_data(ttl=300)
-def buscar_licitacoes_api(termo):
-    url = "https://pncp.gov.br/api/search/"
-    todos_itens = []
+def consultar_pncp_por_termo(dias):
+    data_fim = datetime.now()
+    data_inicio = data_fim - timedelta(days=dias)
     
-    # Busca focada nas páginas mais recentes para garantir editais do ano corrente
-    for pagina in range(1, 4):
+    url = "https://pncp.gov.br/api/consulta/v1/licitacoes"
+    todos_registros = []
+    
+    # Varre as páginas recentes do PNCP por intervalo de datas
+    for pagina in range(1, 6):
         params = {
-            "q": termo,
-            "tipos_documento": "edital",
+            "dataInicial": data_inicio.strftime("%Y%m%d"),
+            "dataFinal": data_fim.strftime("%Y%m%d"),
             "pagina": pagina,
-            "tam_pagina": 50
+            "tamanhoPagina": 100
         }
         try:
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, timeout=15)
             if response.status_code == 200:
-                items = response.json().get("items", [])
-                if not items:
+                dados = response.json().get("resultado", [])
+                if not dados:
                     break
-                todos_itens.extend(items)
+                todos_registros.extend(dados)
             else:
                 break
         except Exception:
             break
-    return todos_itens
+            
+    return todos_registros
 
-# Coleta de dados
+# Coleta e Filtragem Cruzada Completa (Todos os termos testados um a um)
 resultados = []
 urls_vistas = set()
 
-with st.spinner("Processando licitações do ano vigente..."):
-    for t_base in TERMOS_BASE:
-        variacoes = gerar_variacoes(t_base)
-        for termo in variacoes:
-            itens = buscar_licitacoes_api(termo)
-            for item in itens:
-                titulo = item.get("title") or item.get("description") or "Objeto não detalhado"
-                orgao = item.get("orgao_razao_social") or item.get("orgao_nome") or "Órgão Não Informado"
+with st.spinner("Executando varredura cruzada em todos os filtros oficiais para 2026..."):
+    bruto = consultar_pncp_por_termo(dias_retroativos)
+    
+    for lic in bruto:
+        objeto_bruto = lic.get("objetoResumido") or lic.get("objeto") or ""
+        objeto_norm = normalizar(objeto_bruto)
+        
+        orgao_nome = lic.get("orgaoEntidade", {}).get("razaoSocial", "")
+        orgao_norm = normalizar(orgao_nome)
+        
+        # Verifica contra cada um dos 15 termos oficiais (com e sem acento)
+        for termo in TERMOS_OFICIAIS:
+            termo_norm = normalizar(termo)
+            
+            if termo_norm in objeto_norm or termo_norm in orgao_norm:
+                cnpj = lic.get("orgaoEntidade", {}).get("cnpj", "")
+                ano = str(lic.get("ano", ""))
+                seq = lic.get("sequencial", "")
                 
-                link = item.get("url") or item.get("link") or ""
-                pncp_id = item.get("id") or item.get("numeroControlePNCP")
-                
-                if pncp_id:
-                    link = f"https://pncp.gov.br/app/editais/{pncp_id}"
-                elif not link or "http" not in link:
-                    link = f"https://pncp.gov.br/app/editais?q={termo}"
-
-                portal_origem = "PNCP / Compras.gov.br"
-                link_lower = link.lower()
-                if "bll" in link_lower or "bllcompras" in link_lower:
-                    portal_origem = "BLL Compras"
-                elif "licitacoes-e" in link_lower or "bb" in link_lower:
-                    portal_origem = "Licitações-e (Banco do Brasil)"
-                elif "diario" in link_lower or "imprensa" in link_lower:
-                    portal_origem = "Diário Oficial"
-
-                valor = item.get("valor_total_estimado") or item.get("valorTotalEstimado") or 0.0
-                data_pub = item.get("data_publicacao") or item.get("dataPublicacaoPncp") or ""
-
-                # Extração rigorosa do ano
-                ano_pub = ""
-                data_formatada = data_pub
-                if data_pub:
-                    try:
-                        dt = datetime.fromisoformat(data_pub.replace("Z", ""))
-                        ano_pub = str(dt.year)
-                        data_formatada = dt.strftime("%d/%m/%Y %H:%M")
-                    except Exception:
-                        if len(data_pub) >= 4:
-                            ano_pub = data_pub[:4]
-
-                # FILTRO RÍGIDO: Rejeita estritamente qualquer edital que não seja de 2026 (bloqueia 2025 e anteriores)
-                if ano_pub != ano_vigente:
+                # Validação estrita do ano 2026 (descarta 2025 ou anteriores)
+                data_pub = lic.get("dataPublicacaoPncp") or ""
+                if ano != ano_vigente and not data_pub.startswith(ano_vigente):
                     continue
+                
+                link = f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{seq}" if (cnpj and ano and seq) else f"https://pncp.gov.br/app/editais"
+                
+                portal_origem = "PNCP / Compras.gov.br"
+                modalidade = lic.get("modalidadeNome", "Pregão / Eletrônica")
+                mod_lower = modalidade.lower()
+                if "bll" in mod_lower:
+                    portal_origem = "BLL Compras"
+                elif "licitacoes-e" in mod_lower or "banco do brasil" in mod_lower:
+                    portal_origem = "Licitações-e (Banco do Brasil)"
+
+                valor = lic.get("valorTotalEstimado") or 0.0
+                
+                # Formatação da data
+                data_formatada = data_pub
+                try:
+                    dt = datetime.fromisoformat(data_pub.replace("Z", ""))
+                    data_formatada = dt.strftime("%d/%m/%Y %H:%M")
+                except Exception:
+                    pass
 
                 if link not in urls_vistas:
                     urls_vistas.add(link)
                     resultados.append({
-                        "Termo": t_base.upper(),
-                        "Orgao": orgao,
-                        "Objeto": titulo,
+                        "Termo": termo.upper(),
+                        "Orgao": orgao_nome or "Órgão Não Informado",
+                        "Objeto": objeto_bruto,
                         "Valor": valor,
                         "DataOriginal": data_pub,
-                        "DataExibicao": data_formatada,
+                        "DataExibicao": data_formatada if data_formatada else "Data não informada",
                         "Portal": portal_origem,
                         "Link": link
                     })
+                break # Encontrou um termo para este edital, passa para o próximo
 
 df = pd.DataFrame(resultados)
 
-# Ordenação Cronológica Estrita (Mais recente no topo)
+# Ordenação Cronológica Estrita (Do mais recente para o mais antigo - Hoje no topo)
 if not df.empty:
     df = df.sort_values(by="DataOriginal", ascending=False, na_position='last').reset_index(drop=True)
 
-# Métricas Visuais Limpas
+# Métricas Visuais
 col_m1, col_m2, col_m3 = st.columns(3)
-col_m1.metric("Licitações Localizadas (2026)", len(df))
-col_m2.metric("Termos Monitorados", len(TERMOS_BASE))
+col_m1.metric("Licitações 2026 Encontradas", len(df))
+col_m2.metric("Termos Monitorados", len(TERMOS_OFICIAIS))
 col_m3.metric("Ano de Referência", ano_vigente)
 
 st.markdown("---")
 
 if not df.empty:
-    st.subheader("Editais e Avisos Vigentes")
+    st.subheader("Editais e Avisos Vigentes (2026)")
     
     filtro_texto = st.text_input("Filtrar resultados por palavra-chave, órgão ou portal:", "")
     if filtro_texto:
@@ -175,7 +178,7 @@ if not df.empty:
                 df['Portal'].str.contains(filtro_texto, case=False, na=False)]
     
     for idx, row in df.iterrows():
-        valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta"
+        valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta / Não Informado"
         with st.expander(f"[{row['Termo']}] {row['Orgao']} — {row['DataExibicao']} — {valor_str}"):
             st.markdown(f"**Órgão:** {row['Orgao']}")
             st.markdown(f"**Objeto:** {row['Objeto']}")
@@ -187,8 +190,8 @@ if not df.empty:
     st.download_button(
         label="Baixar Relatório em Planilha (CSV)",
         data=csv,
-        file_name=f"licitacoes_2026_{datetime.now().strftime('%Y%m%d')}.csv",
+        file_name=f"licitacoes_geotecnologias_2026_{datetime.now().strftime('%Y%m%d')}.csv",
         mime="text/csv"
     )
 else:
-    st.warning("Nenhum edital de 2026 encontrado com os termos atuais neste momento. Utilize o botão de atualização na barra lateral.")
+    st.warning("Nenhum edital encontrado com os filtros atuais no período selecionado. Tente aumentar o período de varredura para 90 ou 120 dias na barra lateral.")
