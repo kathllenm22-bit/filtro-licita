@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import unicodedata
 
 # Configuração da página
@@ -53,6 +53,9 @@ st.markdown("<p style='text-align: center; color: #6b7280; margin-bottom: 30px;'
 # --- BARRA LATERAL ---
 st.sidebar.header("Painel de Controle")
 
+# Controlo do período de varredura em dias
+dias_busca = st.sidebar.slider("Período de Varredura (Dias)", min_value=15, max_value=90, value=60)
+
 # Filtro opcional de Ano baseado estritamente na Data de Publicação
 ano_opcao = st.sidebar.selectbox(
     "Filtrar por Ano de Publicação",
@@ -62,7 +65,7 @@ ano_opcao = st.sidebar.selectbox(
 
 # Seleção de Categoria / Status
 status_opcao = st.sidebar.selectbox(
-    "Filtro de Fase / Status",
+    "Fase / Status",
     ["Abertas / Recebendo Proposta", "Em Julgamento / Encerradas / Canceladas-Revogadas", "Todos os Status"],
     index=0
 )
@@ -74,113 +77,120 @@ if st.sidebar.button("Atualizar Dados Agora"):
     st.cache_data.clear()
     st.rerun()
 
-# Função de busca textual direta na API de pesquisa do PNCP
+# Função de busca fiável baseada no endpoint de consulta por intervalo de datas do PNCP
 @st.cache_data(ttl=300)
-def buscar_termo_pncp(termo):
-    url = "https://pncp.gov.br/api/search/"
-    params = {
-        "q": termo,
-        "tipos_documento": "edital",
-        "pagina": 1,
-        "tam_pagina": 40
-    }
+def buscar_licitacoes_pncp(dias):
+    data_fim = datetime.now()
+    data_inicio = data_fim - timedelta(days=dias)
+    url = "https://pncp.gov.br/api/consulta/v1/licitacoes"
+    todos_registros = []
+    
+    for pagina in range(1, 6):
+        params = {
+            "dataInicial": data_inicio.strftime("%Y%m%d"),
+            "dataFinal": data_fim.strftime("%Y%m%d"),
+            "pagina": pagina,
+            "tamanhoPagina": 100
+        }
+        try:
+            response = requests.get(url, params=params, timeout=15)
+            if response.status_code == 200:
+                dados = response.json().get("resultado", [])
+                if not dados:
+                    break
+                todos_registros.extend(dados)
+            else:
+                break
+        except Exception:
+            break
+    return todos_registros
 
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        if response.status_code == 200:
-            return response.json().get("items", [])
-        return []
-    except Exception:
-        return []
-
-# Coleta de dados com foco rigoroso na Data de Publicação
+# Coleta de dados com foco rigoroso na Data de Publicação e nos 15 termos
 resultados = []
 urls_vistas = set()
 hoje_str = date.today().strftime("%Y-%m-%d")
 
-with st.spinner("Varrendo portais e filtrando por Data de Publicação oficial..."):
-    for t_base in TERMOS_OFICIAIS:
-        variacoes = set([t_base, normalizar(t_base)])
-        for termo_busca in variacoes:
-            itens = buscar_termo_pncp(termo_busca)
-            for item in itens:
-                titulo = item.get("title") or item.get("description") or "Objeto não detalhado"
-                orgao = item.get("orgao_razao_social") or item.get("orgao_nome") or "Órgão Não Informado"
-                
-                link = item.get("url") or item.get("link") or ""
-                pncp_id = item.get("id") or item.get("numeroControlePNCP")
-                
-                if pncp_id:
-                    link = f"https://pncp.gov.br/app/editais/{pncp_id}"
-                elif not link or "http" not in link:
-                    link = f"https://pncp.gov.br/app/editais?q={termo_busca}"
-
-                portal_origem = "PNCP / Compras.gov.br"
-                link_lower = link.lower()
-                if "bll" in link_lower or "bllcompras" in link_lower:
-                    portal_origem = "BLL Compras"
-                elif "licitacoes-e" in link_lower or "bb" in link_lower:
-                    portal_origem = "Licitações-e (Banco do Brasil)"
-                elif "diario" in link_lower or "imprensa" in link_lower:
-                    portal_origem = "Diário Oficial"
-
-                valor = item.get("valor_total_estimado") or item.get("valorTotalEstimado") or 0.0
-                
-                # CAPTURA OFICIAL DA DATA DE PUBLICAÇÃO
-                data_pub = item.get("data_publicacao") or item.get("dataPublicacaoPncp") or item.get("data_inclusao") or ""
-
-                # Se não houver data de publicação clara, descartamos para evitar itens antigos lixo (2022, 2023)
-                if not data_pub:
-                    continue
-
-                # Extração rigorosa do ano com base na Data de Publicação
-                ano_detectado = ""
-                data_formatada = ""
-                try:
-                    dt = datetime.fromisoformat(str(data_pub).replace("Z", ""))
-                    ano_detectado = str(dt.year)
-                    data_formatada = dt.strftime("%d/%m/%Y %H:%M")
-                except Exception:
-                    ano_detectado = str(data_pub)[:4]
-                    data_formatada = str(data_pub)
-
-                # Identificação de Status
-                situacao_api = str(item.get("situacao_encontrada") or item.get("status") or "").lower()
-                titulo_lower = titulo.lower()
-                
-                if "cancelada" in situacao_api or "revogada" in situacao_api or "cancelada" in titulo_lower or "revogada" in titulo_lower:
-                    fase_atual = "Cancelada / Revogada"
-                elif "julgamento" in situacao_api or "analise" in situacao_api or "habilitacao" in situacao_api:
-                    fase_atual = "Em Julgamento"
-                elif "encerrada" in situacao_api or "homologada" in situacao_api or "concluida" in situacao_api:
-                    fase_atual = "Encerrada"
-                else:
-                    fase_atual = "Abertas / Recebendo Proposta"
-                
-                # Verifica se foi publicado hoje
-                is_hoje = False
-                if str(data_pub).startswith(hoje_str):
-                    is_hoje = True
-
-                if link not in urls_vistas:
-                    urls_vistas.add(link)
-                    resultados.append({
-                        "Termo": t_base.upper(),
-                        "Orgao": orgao,
-                        "Objeto": titulo,
-                        "Valor": valor,
-                        "DataOriginal": data_pub,
-                        "DataExibicao": data_formatada,
-                        "Ano": ano_detectado,
-                        "Portal": portal_origem,
-                        "Fase": fase_atual,
-                        "PublicadoHoje": is_hoje,
-                        "Link": link
-                    })
+with st.spinner("A consultar a API oficial do PNCP e a filtrar por Data de Publicação..."):
+    bruto = buscar_licitacoes_pncp(dias_busca)
+    
+    for lic in bruto:
+        objeto_bruto = lic.get("objetoResumido") or lic.get("objeto") or ""
+        objeto_norm = normalizar(objeto_bruto)
+        orgao_nome = lic.get("orgaoEntidade", {}).get("razaoSocial", "") or lic.get("orgaoNome", "")
+        orgao_norm = normalizar(orgao_nome)
+        
+        # Validação cruzada com os 15 termos oficiais
+        encontrou_termo = False
+        termo_encontrado = ""
+        for termo in TERMOS_OFICIAIS:
+            t_norm = normalizar(termo)
+            if t_norm in objeto_norm or t_norm in orgao_norm:
+                encontrou_termo = True
+                termo_encontrado = termo.upper()
+                break
+        
+        if not encontrou_termo:
+            continue
+            
+        cnpj = lic.get("orgaoEntidade", {}).get("cnpj", "")
+        ano_reg = str(lic.get("ano", ""))
+        seq = lic.get("sequencial", "")
+        
+        link = f"https://pncp.gov.br/app/editais/{cnpj}/{ano_reg}/{seq}" if (cnpj and ano_reg and seq) else f"https://pncp.gov.br/app/editais"
+        
+        portal_origem = "PNCP / Compras.gov.br"
+        modalidade = str(lic.get("modalidadeNome", "")).lower()
+        if "bll" in modalidade:
+            portal_origem = "BLL Compras"
+        elif "licitacoes-e" in modalidade or "banco do brasil" in modalidade:
+            portal_origem = "Licitações-e (Banco do Brasil)"
+            
+        valor = lic.get("valorTotalEstimado") or 0.0
+        
+        # CAPTURA DA DATA DE PUBLICAÇÃO REAL
+        data_pub = lic.get("dataPublicacaoPncp") or lic.get("dataInclusao") or ""
+        if not data_pub:
+            continue
+            
+        try:
+            dt = datetime.fromisoformat(str(data_pub).replace("Z", ""))
+            ano_detectado = str(dt.year)
+            data_formatada = dt.strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            ano_detectado = str(data_pub)[:4]
+            data_formatada = str(data_pub)
+            
+        situacao = str(lic.get("situacaoCompraNome") or lic.get("status") or "").lower()
+        if "cancelada" in situacao or "revogada" in situacao:
+            fase_atual = "Cancelada / Revogada"
+        elif "julgamento" in situacao or "análise" in situacao or "habilitação" in situacao:
+            fase_atual = "Em Julgamento"
+        elif "encerrada" in situacao or "homologada" in situacao or "concluída" in situacao:
+            fase_atual = "Encerrada"
+        else:
+            fase_atual = "Abertas / Recebendo Proposta"
+            
+        is_hoje = str(data_pub).startswith(hoje_str)
+        
+        if link not in urls_vistas:
+            urls_vistas.add(link)
+            resultados.append({
+                "Termo": termo_encontrado,
+                "Orgao": orgao_nome or "Órgão Não Informado",
+                "Objeto": objeto_bruto,
+                "Valor": valor,
+                "DataOriginal": data_pub,
+                "DataExibicao": data_formatada,
+                "Ano": ano_detectado,
+                "Portal": portal_origem,
+                "Fase": fase_atual,
+                "PublicadoHoje": is_hoje,
+                "Link": link
+            })
 
 df = pd.DataFrame(resultados)
 
-# Aplicação do Filtro Opcional de Ano baseado estritamente na Data de Publicação
+# Aplicação do Filtro Opcional de Ano
 if not df.empty:
     if ano_opcao == "2026 (Ano Atual)":
         df = df[df['Ano'] == "2026"]
@@ -256,4 +266,4 @@ if not df.empty:
         mime="text/csv"
     )
 else:
-    st.warning("Nenhum edital encontrado com os filtros selecionados no momento.")
+    st.warning("Nenhum edital encontrado para os filtros selecionados no momento. Tente aumentar o período de varredura (dias) na barra lateral.")
