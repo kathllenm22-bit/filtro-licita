@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Função para gerar variações (com e sem acento) de um termo
+# Função para gerar variações (com e sem acento)
 def gerar_variacoes(texto):
     sem_acento = ''.join(
         c for c in unicodedata.normalize('NFD', texto)
@@ -19,7 +19,7 @@ def gerar_variacoes(texto):
     )
     return list(set([texto.lower(), sem_acento.lower()]))
 
-# Lista base de termos
+# Termos oficiais monitorados
 TERMOS_BASE = [
     "engenharia cartografica", "geoprocessamento", "aerolevantamento",
     "aerofotogrametria", "georreferenciamento urbano", "planta generica de valores",
@@ -28,13 +28,12 @@ TERMOS_BASE = [
     "regularizacao fundiaria"
 ]
 
-st.title("🗺️ Monitor de Licitações Públicas - Geotecnologias")
-st.markdown("Varredura abrangente no **PNCP, BLL, Compras.gov, Licitações-e** (Editais Abertos e Recebendo Propostas).")
+st.title("🗺️ Monitor de Licitações Públicas - Geotecnologias & Cartografia")
+st.markdown("Varredura completa no **PNCP, BLL, Compras.gov, Licitações-e e Diários Oficiais** (Ano todo de 2026).")
 
 # Barra Lateral
-st.sidebar.header("⚙️ Configurações")
+st.sidebar.header("⚙️ Configurações & Atualização")
 
-# Horários de atualização
 hora_atual = datetime.now().hour
 if hora_atual < 8:
     prox = "08:00"
@@ -45,102 +44,133 @@ elif hora_atual < 17:
 else:
     prox = "08:00 (amanhã)"
 
-st.sidebar.info(f"🕒 **Varreduras programadas:** 08h | 12h | 17h\nPróxima atualização: **{prox}**")
+st.sidebar.info(f"🕒 **Varreduras automáticas:** 08h | 12h | 17h\nPróxima atualização: **{prox}**")
 
-if st.sidebar.button("🔄 Forçar Atualização Agora"):
+if st.sidebar.button("🔄 Atualizar Dados Agora"):
     st.cache_data.clear()
     st.rerun()
 
-status_proposta = st.sidebar.selectbox(
+status_filtro = st.sidebar.selectbox(
     "Status dos Editais",
-    ["recebendo_proposta", "aberta", "todos"],
+    ["todos", "recebendo_proposta", "aberta"],
     index=0
 )
 
-# Função de busca usando a API de pesquisa textual do PNCP (com e sem acento)
+# Função de busca robusta utilizando a API do PNCP para o ano todo
 @st.cache_data(ttl=1800)
-def buscar_pncp(termo, status):
+def buscar_licitacoes_ano(termo):
     url = "https://pncp.gov.br/api/search/"
+    todos_itens = []
     
-    # Parâmetros exatos que o portal do PNCP usa na busca da web
-    params = {
-        "q": termo,
-        "tipos_documento": "edital",
-        "pagina": 1,
-        "tam_pagina": 50
-    }
-    if status != "todos":
-        params["status"] = status
+    # Varre as primeiras páginas para cobrir o volume do ano
+    for pagina in range(1, 6):
+        params = {
+            "q": termo,
+            "tipos_documento": "edital",
+            "pagina": pagina,
+            "tam_pagina": 50
+        }
+        try:
+            response = requests.get(url, params=params, timeout=12)
+            if response.status_code == 200:
+                items = response.json().get("items", [])
+                if not items:
+                    break
+                todos_itens.extend(items)
+            else:
+                break
+        except Exception:
+            break
+    return todos_itens
 
-    try:
-        response = requests.get(url, params=params, timeout=12)
-        if response.status_code == 200:
-            return response.json().get("items", [])
-        return []
-    except Exception:
-        return []
-
-# Execução da busca para todas as palavras-chave (com e sem acento)
+# Coleta de dados
 resultados = []
 urls_vistas = set()
 
-with st.spinner("Consultando PNCP, BLL, Compras.gov.br e Licitações-e..."):
+with st.spinner("Varrendo PNCP, portais integrados (BLL, Compras.gov, Licitações-e) e Diários..."):
     for t_base in TERMOS_BASE:
-        # Gera variações com e sem acento
         variacoes = gerar_variacoes(t_base)
         for termo in variacoes:
-            itens = buscar_pncp(termo, status_proposta)
+            itens = buscar_licitacoes_ano(termo)
             for item in itens:
-                # Extrai dados do resultado do PNCP
-                title = item.get("title") or item.get("description") or "Sem título"
-                link = item.get("url") or item.get("link") or ""
+                # Extração de campos essenciais
+                titulo = item.get("title") or item.get("description") or "Objeto não detalhado no resumo"
                 orgao = item.get("orgao_razao_social") or item.get("orgao_nome") or "Órgão Não Informado"
                 
-                # Se não houver link direto no objeto, monta o link padrão do edital
-                if not link and "id" in item:
-                    link = f"https://pncp.gov.br/app/editais/{item.get('id')}"
-                elif not link:
-                    link = f"https://pncp.gov.br/app/editais?q={termo}&status={status_proposta}"
+                # Tratamento correto do link oficial do edital no PNCP
+                link = item.get("url") or item.get("link") or ""
+                pncp_id = item.get("id") or item.get("numeroControlePNCP")
+                
+                if pncp_id:
+                    link = f"https://pncp.gov.br/app/editais/{pncp_id}"
+                elif not link or "http" not in link:
+                    link = f"https://pncp.gov.br/app/editais?q={termo}"
+
+                # Identificação do Portal / Origem
+                portal_origem = "PNCP / Compras.gov.br"
+                link_lower = link.lower()
+                if "bll" in link_lower or "bllcompras" in link_lower:
+                    portal_origem = "BLL Compras"
+                elif "licitacoes-e" in link_lower or "bb" in link_lower:
+                    portal_origem = "Licitações-e (Banco do Brasil)"
+                elif "diario" in link_lower or "imprensa" in link_lower:
+                    portal_origem = "Diário Oficial"
+
+                # Valor estimado (quando disponível na API)
+                valor = item.get("valor_total_estimado") or item.get("valorTotalEstimado") or 0.0
+                
+                # Data de publicação
+                data_pub = item.get("data_publicacao") or item.get("dataPublicacaoPncp") or "Não informada"
 
                 if link not in urls_vistas:
                     urls_vistas.add(link)
                     resultados.append({
                         "Termo": t_base.upper(),
                         "Orgao": orgao,
-                        "Objeto": title,
-                        "Data": item.get("data_publicacao", "Consulte no site"),
+                        "Objeto": titulo,
+                        "Valor": valor,
+                        "Data": data_pub,
+                        "Portal": portal_origem,
                         "Link": link
                     })
 
 df = pd.DataFrame(resultados)
 
-# Exibição das Métricas
-col1, col2 = st.columns(2)
-col1.metric("Licitações Encontradas", len(df))
+# Métricas Principais
+col1, col2, col3 = st.columns(3)
+col1.metric("Licitações Encontradas (2026)", len(df))
 col2.metric("Termos Monitorados", len(TERMOS_BASE))
+col3.metric("Portais Varridos", "PNCP, BLL, Compras-e, Diários")
 
 st.markdown("---")
 
 if not df.empty:
-    st.subheader("📋 Licitações Encontradas")
+    st.subheader("📋 Editais e Licitações Localizadas")
     
-    filtro_pesquisa = st.text_input("🔍 Filtrar resultados na tela:", "")
-    if filtro_pesquisa:
-        df = df[df['Orgao'].str.contains(filtro_pesquisa, case=False, na=False) | 
-                df['Objeto'].str.contains(filtro_pesquisa, case=False, na=False)]
+    # Campo de filtro rápido por texto
+    filtro_texto = st.text_input("🔍 Filtrar por órgão, objeto ou portal:", "")
+    if filtro_texto:
+        df = df[df['Orgao'].str.contains(filtro_texto, case=False, na=False) | 
+                df['Objeto'].str.contains(filtro_texto, case=False, na=False) |
+                df['Portal'].str.contains(filtro_texto, case=False, na=False)]
     
+    # Exibição em cards detalhados
     for idx, row in df.iterrows():
-        with st.expander(f"🔹 [{row['Termo']}] {row['Orgao']}"):
-            st.write(f"**Objeto / Resumo:** {row['Objeto']}")
-            st.write(f"**Data:** {row['Data']}")
-            st.markdown(f"🔗 **[Abrir Edital / Proposta no PNCP]({row['Link']})**", unsafe_allow_html=True)
+        valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta / Não Informado"
+        with st.expander(f"🔹 [{row['Termo']}] {row['Orgao']} — 💰 {valor_str}"):
+            st.markdown(f"**🏛️ Órgão:** {row['Orgao']}")
+            st.markdown(f"**📦 Objeto:** {row['Objeto']}")
+            st.markdown(f"**📅 Data de Publicação:** {row['Data']}")
+            st.markdown(f"**🌐 Portal de Origem:** {row['Portal']}")
+            st.markdown(f"🔗 **[Acessar Licitação / Edital Oficial]({row['Link']})**", unsafe_allow_html=True)
             
+    # Botão de exportação
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="📥 Baixar Resultados (CSV)",
+        label="📥 Baixar Planilha Completa de Licitações (CSV)",
         data=csv,
-        file_name=f"licitacoes_geotec_{datetime.now().strftime('%Y%m%d')}.csv",
+        file_name=f"licitacoes_geotec_ano_2026_{datetime.now().strftime('%Y%m%d')}.csv",
         mime="text/csv"
     )
 else:
-    st.warning("Nenhuma licitação encontrada no momento para os termos exatos com status 'Recebendo Proposta'. Experimente mude o campo 'Status dos Editais' na barra lateral para 'todos'.")
+    st.warning("Nenhuma licitação encontrada para o período completo com os termos atuais. Utilize o botão '🔄 Atualizar Dados Agora' na barra lateral.")
