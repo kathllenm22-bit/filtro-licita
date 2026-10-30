@@ -18,6 +18,7 @@ st.markdown("""
     .stExpander { border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 8px; background-color: white; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
     h1 { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 700; color: #1f2937; }
     .destaque-hoje { background-color: #e0f2fe; padding: 12px; border-radius: 6px; border-left: 5px solid #0284c7; margin-bottom: 10px; }
+    .tag-termo { background-color: #e2e8f0; color: #1e293b; padding: 2px 6px; border-radius: 4px; font-weight: 600; font-size: 0.85em; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -48,7 +49,7 @@ with col_logo2:
         st.info("Envie o ficheiro 'logo.png' para a raiz do repositório no GitHub para exibir o logótipo centralizado.")
 
 st.markdown("<h1 style='text-align: center; font-size: 28px; margin-bottom: 0px;'>Monitor de Licitações & Geotecnologias</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #6b7280; margin-bottom: 30px;'>Varredura em tempo real com destaque para publicações de hoje</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #6b7280; margin-bottom: 30px;'>Varredura em tempo real com identificação da palavra de filtro</p>", unsafe_allow_html=True)
 
 # --- BARRA LATERAL ---
 st.sidebar.header("Painel de Controle")
@@ -100,12 +101,12 @@ def buscar_por_termo(termo):
             break
     return itens_totais
 
-# Coleta de dados
+# Coleta de dados com rastreio da palavra de filtro correspondente
 resultados = []
 urls_vistas = set()
 hoje = date.today()
 
-with st.spinner("A consultar portais e a processar datas..."):
+with st.spinner("A consultar portais e a identificar termos de filtro..."):
     for termo_base in TERMOS_OFICIAIS:
         variacoes = set([termo_base, normalizar(termo_base)])
         
@@ -166,13 +167,12 @@ with st.spinner("A consultar portais e a processar datas..."):
                 else:
                     fase_atual = "Abertas / Recebendo Proposta"
                 
-                # Verificação exata se foi publicado hoje
                 is_hoje = (dt_divulgacao.date() == hoje)
 
                 if link not in urls_vistas:
                     urls_vistas.add(link)
                     resultados.append({
-                        "Termo": termo_base.upper(),
+                        "TermoFiltro": termo_base.upper(),
                         "Orgao": orgao,
                         "Objeto": titulo,
                         "Valor": valor,
@@ -209,7 +209,6 @@ if not df.empty:
 if not df.empty:
     df = df.sort_values(by="DataObj", ascending=False, na_position='last').reset_index(drop=True)
 
-# Contagem real de publicados hoje em todo o conjunto recolhido
 total_hoje = len(df[df['PublicadoHoje'] == True]) if not df.empty else 0
 
 # Métricas Visuais no Topo
@@ -222,7 +221,7 @@ col_m4.metric("Termos Monitorados", len(TERMOS_OFICIAIS))
 st.markdown("---")
 
 if not df.empty:
-    # Seção de destaque para itens publicados hoje (Sempre visível no topo se existirem)
+    # Seção de destaque para itens publicados hoje
     df_hoje_geral = df[df['PublicadoHoje'] == True]
     if not df_hoje_geral.empty:
         st.subheader("🔥 Divulgadas Hoje no PNCP")
@@ -230,7 +229,7 @@ if not df.empty:
             valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta / Não Informado"
             st.markdown(f"""
                 <div class="destaque-hoje">
-                    <b>[{row['Termo']}] {row['Orgao']}</b><br>
+                    <b>🔍 Termo Detectado: <span class="tag-termo">{row['TermoFiltro']}</span></b> | <b>{row['Orgao']}</b><br>
                     📦 {row['Objeto']}<br>
                     📅 <b>Data de Divulgação: {row['DataExibicao']}</b> | 💰 {valor_str} | 🌐 {row['Portal']} | 📌 <i>{row['Fase']}</i><br>
                     🔗 <a href="{row['Link']}" target="_blank">Acessar Edital Oficial no PNCP</a>
@@ -245,13 +244,15 @@ if not df.empty:
         df = df[df['Orgao'].str.contains(filtro_texto, case=False, na=False) | 
                 df['Objeto'].str.contains(filtro_texto, case=False, na=False) |
                 df['Portal'].str.contains(filtro_texto, case=False, na=False) |
+                df['TermoFiltro'].str.contains(filtro_texto, case=False, na=False) |
                 df['Fase'].str.contains(filtro_texto, case=False, na=False)]
     
     for idx, row in df.iterrows():
         valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta / Não Informado"
         badge_hoje = " 🔥 [DIVULGADO HOJE]" if row['PublicadoHoje'] else ""
         
-        with st.expander(f"[{row['Termo']}] {row['Orgao']} — Divulgação: {row['DataExibicao']} — {row['Fase']}{badge_hoje} — {valor_str}"):
+        with st.expander(f"[{row['TermoFiltro']}] {row['Orgao']} — Divulgação: {row['DataExibicao']} — {row['Fase']}{badge_hoje} — {valor_str}"):
+            st.markdown(f"**🔍 Palavra de Filtro Correspondente:** <span class='tag-termo'>{row['TermoFiltro']}</span>", unsafe_allow_html=True)
             st.markdown(f"**Órgão:** {row['Orgao']}")
             st.markdown(f"**Objeto:** {row['Objeto']}")
             st.markdown(f"**📅 Data de Divulgação no PNCP:** {row['DataExibicao']}")
