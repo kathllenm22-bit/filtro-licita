@@ -11,18 +11,12 @@ st.set_page_config(
     layout="wide"
 )
 
-# Estilização CSS personalizada para um layout mais limpo e profissional
+# Estilização corporativa e limpa (sem excesso de emojis)
 st.markdown("""
     <style>
-    .main {
-        background-color: #f8f9fa;
-    }
-    .stExpander {
-        border: 1px solid #e0e0e0;
-        border-radius: 8px;
-        margin-bottom: 10px;
-        background-color: white;
-    }
+    .main { background-color: #f4f6f9; }
+    .stExpander { border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 8px; background-color: white; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    h1 { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 700; color: #1f2937; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -43,52 +37,39 @@ TERMOS_BASE = [
     "regularizacao fundiaria"
 ]
 
-# --- BARRA LATERAL ---
-st.sidebar.header("⚙️ Painel de Controle")
+# --- CABEÇALHO CORPORATIVO COM LOGÓTIPO CENTRALIZADO ---
+col_logo1, col_logo2, col_logo3 = st.columns([1, 2, 1])
+with col_logo2:
+    try:
+        st.image("logo.png", use_container_width=True)
+    except Exception:
+        # Caso o arquivo logo.png ainda não esteja no GitHub, exibe um aviso limpo
+        st.info("Envie o arquivo 'logo.png' para a raiz do repositório no GitHub para exibir o logótipo centralizado.")
 
-# Suporte ao Logótipo da Empresa (Basta enviar o arquivo logo.png para o repositório do GitHub)
-try:
-    st.sidebar.image("logo.png", use_container_width=True)
-    st.sidebar.markdown("---")
-except Exception:
-    pass  # Se o logo ainda não tiver sido enviado, continua sem ele sem dar erro
+st.markdown("<h1 style='text-align: center; font-size: 28px; margin-bottom: 0px;'>Monitor de Licitações & Geotecnologias</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #6b7280; margin-bottom: 30px;'>Varredura em tempo real: PNCP, BLL, Compras.gov, Licitações-e e Diários Oficiais</p>", unsafe_allow_html=True)
 
-# Filtro de Ano Robusto (Padrão: Ano atual 2026)
-ano_atual_str = str(datetime.now().year)
-ano_selecionado = st.sidebar.selectbox(
-    "📅 Filtrar por Ano",
-    [ano_atual_str, "2025", "Todos os Anos"],
-    index=0
-)
+# --- BARRA LATERAL LIMPA ---
+st.sidebar.header("Painel de Controle")
+
+ano_vigente = "2026"
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🕒 Atualização Automática")
-hora_atual = datetime.now().hour
-if hora_atual < 8:
-    prox = "08:00"
-elif hora_atual < 12:
-    prox = "12:00"
-elif hora_atual < 17:
-    prox = "17:00"
-else:
-    prox = "08:00 (amanhã)"
+st.sidebar.subheader("Sincronização")
+st.sidebar.text("Atualizações automáticas:\n08h | 12h | 17h")
 
-st.sidebar.info(f"Varreduras programadas: **08h | 12h | 17h**\nPróxima: **{prox}**")
-
-if st.sidebar.button("🔄 Atualizar Dados de Hoje"):
+if st.sidebar.button("Atualizar Dados Agora"):
     st.cache_data.clear()
     st.rerun()
 
-st.title("🗺️ Monitor de Licitações Públicas")
-st.markdown("Plataforma integrada de geotecnologias: **PNCP, BLL, Compras.gov, Licitações-e e Diários Oficiais**.")
-
-# Função de busca robusta na API
-@st.cache_data(ttl=1800)
+# Função de busca em tempo real na API com foco em 2026
+@st.cache_data(ttl=300)
 def buscar_licitacoes_api(termo):
     url = "https://pncp.gov.br/api/search/"
     todos_itens = []
     
-    for pagina in range(1, 6):
+    # Busca focada nas páginas mais recentes para garantir editais do ano corrente
+    for pagina in range(1, 4):
         params = {
             "q": termo,
             "tipos_documento": "edital",
@@ -96,7 +77,7 @@ def buscar_licitacoes_api(termo):
             "tam_pagina": 50
         }
         try:
-            response = requests.get(url, params=params, timeout=12)
+            response = requests.get(url, params=params, timeout=10)
             if response.status_code == 200:
                 items = response.json().get("items", [])
                 if not items:
@@ -112,7 +93,7 @@ def buscar_licitacoes_api(termo):
 resultados = []
 urls_vistas = set()
 
-with st.spinner("Buscando licitações atualizadas do dia..."):
+with st.spinner("Processando licitações do ano vigente..."):
     for t_base in TERMOS_BASE:
         variacoes = gerar_variacoes(t_base)
         for termo in variacoes:
@@ -121,7 +102,6 @@ with st.spinner("Buscando licitações atualizadas do dia..."):
                 titulo = item.get("title") or item.get("description") or "Objeto não detalhado"
                 orgao = item.get("orgao_razao_social") or item.get("orgao_nome") or "Órgão Não Informado"
                 
-                # Tratamento do link oficial do edital
                 link = item.get("url") or item.get("link") or ""
                 pncp_id = item.get("id") or item.get("numeroControlePNCP")
                 
@@ -130,7 +110,6 @@ with st.spinner("Buscando licitações atualizadas do dia..."):
                 elif not link or "http" not in link:
                     link = f"https://pncp.gov.br/app/editais?q={termo}"
 
-                # Identificação do Portal / Origem
                 portal_origem = "PNCP / Compras.gov.br"
                 link_lower = link.lower()
                 if "bll" in link_lower or "bllcompras" in link_lower:
@@ -143,8 +122,8 @@ with st.spinner("Buscando licitações atualizadas do dia..."):
                 valor = item.get("valor_total_estimado") or item.get("valorTotalEstimado") or 0.0
                 data_pub = item.get("data_publicacao") or item.get("dataPublicacaoPncp") or ""
 
-                # Extração limpa e segura do ano e da data formatada
-                ano_pub = ano_atual_str
+                # Extração rigorosa do ano
+                ano_pub = ""
                 data_formatada = data_pub
                 if data_pub:
                     try:
@@ -155,6 +134,10 @@ with st.spinner("Buscando licitações atualizadas do dia..."):
                         if len(data_pub) >= 4:
                             ano_pub = data_pub[:4]
 
+                # FILTRO RÍGIDO: Rejeita estritamente qualquer edital que não seja de 2026 (bloqueia 2025 e anteriores)
+                if ano_pub != ano_vigente:
+                    continue
+
                 if link not in urls_vistas:
                     urls_vistas.add(link)
                     resultados.append({
@@ -163,57 +146,49 @@ with st.spinner("Buscando licitações atualizadas do dia..."):
                         "Objeto": titulo,
                         "Valor": valor,
                         "DataOriginal": data_pub,
-                        "DataExibicao": data_formatada if data_formatada else "Data não informada",
-                        "Ano": ano_pub,
+                        "DataExibicao": data_formatada,
                         "Portal": portal_origem,
                         "Link": link
                     })
 
 df = pd.DataFrame(resultados)
 
-# Filtro estrito de Ano
-if ano_selecionado != "Todos os Anos" and not df.empty:
-    df = df[df['Ano'] == str(ano_selecionado)]
-
-# Ordenação Cronológica Estrita (Do mais recente para o mais antigo - Hoje no topo)
+# Ordenação Cronológica Estrita (Mais recente no topo)
 if not df.empty:
     df = df.sort_values(by="DataOriginal", ascending=False, na_position='last').reset_index(drop=True)
 
-# Métricas Visuais no Topo
-col1, col2, col3 = st.columns(3)
-col1.metric("📌 Licitações Listadas", len(df))
-col2.metric("🔍 Termos Ativos", len(TERMOS_BASE))
-col3.metric("📅 Filtro de Ano", str(ano_selecionado))
+# Métricas Visuais Limpas
+col_m1, col_m2, col_m3 = st.columns(3)
+col_m1.metric("Licitações Localizadas (2026)", len(df))
+col_m2.metric("Termos Monitorados", len(TERMOS_BASE))
+col_m3.metric("Ano de Referência", ano_vigente)
 
 st.markdown("---")
 
 if not df.empty:
-    st.subheader("📋 Editais Recentes (Ordenados de Hoje para Trás)")
+    st.subheader("Editais e Avisos Vigentes")
     
-    # Campo de busca rápida
-    filtro_texto = st.text_input("🔍 Filtrar resultados por palavra-chave, órgão ou portal:", "")
+    filtro_texto = st.text_input("Filtrar resultados por palavra-chave, órgão ou portal:", "")
     if filtro_texto:
         df = df[df['Orgao'].str.contains(filtro_texto, case=False, na=False) | 
                 df['Objeto'].str.contains(filtro_texto, case=False, na=False) |
                 df['Portal'].str.contains(filtro_texto, case=False, na=False)]
     
-    # Exibição moderna em cards expansíveis
     for idx, row in df.iterrows():
-        valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta / Não Informado"
-        with st.expander(f"🔹 [{row['Termo']}] {row['Orgao']} | 📅 {row['DataExibicao']} | 💰 {valor_str}"):
-            st.markdown(f"**🏛️ Órgão:** {row['Orgao']}")
-            st.markdown(f"**📦 Objeto:** {row['Objeto']}")
-            st.markdown(f"**📅 Data de Publicação:** {row['DataExibicao']}")
-            st.markdown(f"**🌐 Portal de Origem:** {row['Portal']}")
-            st.markdown(f"🔗 **[Acessar Licitação / Edital Oficial]({row['Link']})**", unsafe_allow_html=True)
+        valor_str = f"R$ {row['Valor']:,.2f}" if row['Valor'] > 0 else "Valor sob Consulta"
+        with st.expander(f"[{row['Termo']}] {row['Orgao']} — {row['DataExibicao']} — {valor_str}"):
+            st.markdown(f"**Órgão:** {row['Orgao']}")
+            st.markdown(f"**Objeto:** {row['Objeto']}")
+            st.markdown(f"**Data de Publicação:** {row['DataExibicao']}")
+            st.markdown(f"**Portal de Origem:** {row['Portal']}")
+            st.markdown(f"**[Acessar Edital Oficial]({row['Link']})**", unsafe_allow_html=True)
             
-    # Botão de exportação
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="📥 Baixar Planilha Filtrada (CSV)",
+        label="Baixar Relatório em Planilha (CSV)",
         data=csv,
-        file_name=f"licitacoes_geotec_{datetime.now().strftime('%Y%m%d')}.csv",
+        file_name=f"licitacoes_2026_{datetime.now().strftime('%Y%m%d')}.csv",
         mime="text/csv"
     )
 else:
-    st.warning(f"Nenhuma licitação encontrada para o ano de {ano_selecionado} com os termos atuais. Verifique o filtro de ano na barra lateral ou clique em atualizar.")
+    st.warning("Nenhum edital de 2026 encontrado com os termos atuais neste momento. Utilize o botão de atualização na barra lateral.")
